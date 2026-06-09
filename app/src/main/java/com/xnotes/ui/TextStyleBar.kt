@@ -33,22 +33,17 @@ import com.xnotes.ui.theme.LocalPalette
 import com.xnotes.ui.theme.toComposeColor
 import kotlin.math.roundToInt
 
-private fun getAvailableFaces(): List<Pair<FontFace, String>> {
-    val list = mutableListOf(
-        FontFace.SANS to "Sans",
-        FontFace.SERIF to "Serif",
-        FontFace.MONO to "Mono",
-        FontFace.HAND to "Hand"
-    )
-    for (entry in FontFace.entries) {
-        if (entry != FontFace.SANS && entry != FontFace.SERIF && entry != FontFace.MONO && entry != FontFace.HAND) {
-            list.add(entry to entry.id)
-        }
-    }
-    return list
+private fun faceLabel(face: FontFace): String = when (face) {
+    FontFace.SANS -> "Sans"
+    FontFace.SERIF -> "Serif"
+    FontFace.MONO -> "Mono"
+    FontFace.HAND -> "Hand"
+    else -> face.id
 }
 
-private fun faceLabel(face: FontFace): String = getAvailableFaces().firstOrNull { it.first == face }?.second ?: face.id
+private fun getAvailableFaces(): List<Pair<FontFace, String>> =
+    FontFace.entries.map { it to faceLabel(it) }
+
 
 /**
  * Floating font/size bar for the active text box (the one being edited, or a lone

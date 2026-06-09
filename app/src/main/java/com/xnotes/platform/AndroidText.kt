@@ -26,28 +26,20 @@ object AndroidText {
 
     fun initCustomFonts(context: android.content.Context) {
         val fontsDir = java.io.File(context.filesDir, "fonts")
-        if (!fontsDir.exists()) return
-        val files = fontsDir.listFiles() ?: return
-        val newCustomFonts = mutableMapOf<String, Typeface>()
-        for (file in files) {
-            if (file.isFile && (file.name.endsWith(".ttf", ignoreCase = true) || file.name.endsWith(".otf", ignoreCase = true))) {
-                try {
-                    val typeface = Typeface.createFromFile(file)
-                    val id = file.nameWithoutExtension
-                    newCustomFonts[id] = typeface
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        }
+        val newCustomFonts = if (fontsDir.exists()) {
+            fontsDir.listFiles()
+                ?.filter { it.isFile && (it.name.endsWith(".ttf", true) || it.name.endsWith(".otf", true)) }
+                ?.mapNotNull { file ->
+                    runCatching { Typeface.createFromFile(file) }.getOrNull()?.let { file.nameWithoutExtension to it }
+                }?.toMap() ?: emptyMap()
+        } else emptyMap()
+
         synchronized(customFonts) {
             customFonts.clear()
             customFonts.putAll(newCustomFonts)
             // Re-populate FontFace's customFaces so the UI editor shows them
-            com.xnotes.core.pal.FontFace.clearCustomFaces()
-            for (id in newCustomFonts.keys) {
-                com.xnotes.core.pal.FontFace.fromId(id)
-            }
+            FontFace.clearCustomFaces()
+            newCustomFonts.keys.forEach { FontFace.fromId(it) }
         }
     }
 

@@ -79,23 +79,10 @@ fun PreferencesPane(editor: Editor, sidebarOpen: Boolean, onShowSidebar: () -> U
     }
 
     val context = LocalContext.current
-    var importedFonts by remember { mutableStateOf(emptyList<String>()) }
+    var importedFonts by remember { mutableStateOf(getImportedFonts(context)) }
 
     fun reloadImportedFonts() {
-        val fontsDir = File(context.filesDir, "fonts")
-        if (fontsDir.exists()) {
-            importedFonts = fontsDir.listFiles()
-                ?.filter { it.isFile && (it.name.endsWith(".ttf", true) || it.name.endsWith(".otf", true)) }
-                ?.map { it.nameWithoutExtension }
-                ?.sorted() ?: emptyList()
-        } else {
-            importedFonts = emptyList()
-        }
-    }
-
-    remember {
-        reloadImportedFonts()
-        false
+        importedFonts = getImportedFonts(context)
     }
 
     val fontPickerLauncher = rememberLauncherForActivityResult(
@@ -210,11 +197,9 @@ fun PreferencesPane(editor: Editor, sidebarOpen: Boolean, onShowSidebar: () -> U
                     ) {
                         Text(fontName, color = palette.text.toComposeColor(), fontSize = 14.sp)
                         IconButton(onClick = {
-                            val fontsDir = File(context.filesDir, "fonts")
-                            val otfFile = File(fontsDir, "$fontName.otf")
-                            val ttfFile = File(fontsDir, "$fontName.ttf")
-                            if (otfFile.exists()) otfFile.delete()
-                            if (ttfFile.exists()) ttfFile.delete()
+                            val dir = File(context.filesDir, "fonts")
+                            File(dir, "$fontName.otf").delete()
+                            File(dir, "$fontName.ttf").delete()
                             com.xnotes.platform.AndroidText.initCustomFonts(context)
                             reloadImportedFonts()
                         }) {
@@ -426,29 +411,28 @@ private fun SizeDropdown(size: PageSize, onSelect: (PageSize) -> Unit) {
     }
 }
 
+private fun getImportedFonts(context: android.content.Context): List<String> {
+    val dir = File(context.filesDir, "fonts")
+    if (!dir.exists()) return emptyList()
+    return dir.listFiles()
+        ?.filter { it.isFile && (it.name.endsWith(".ttf", true) || it.name.endsWith(".otf", true)) }
+        ?.map { it.nameWithoutExtension }
+        ?.sorted() ?: emptyList()
+}
+
 private fun getFileName(context: android.content.Context, uri: Uri): String? {
     var result: String? = null
     if (uri.scheme == "content") {
-        val cursor = context.contentResolver.query(uri, null, null, null, null)
-        try {
-            if (cursor != null && cursor.moveToFirst()) {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
                 val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                 if (index != -1) {
                     result = cursor.getString(index)
                 }
             }
-        } finally {
-            cursor?.close()
         }
     }
-    if (result == null) {
-        result = uri.path
-        val cut = result?.lastIndexOf('/')
-        if (cut != null && cut != -1) {
-            result = result.substring(cut + 1)
-        }
-    }
-    return result
+    return result ?: uri.path?.substringAfterLast('/')
 }
 
 private fun importFontFile(context: android.content.Context, uri: Uri): String? {
@@ -456,20 +440,11 @@ private fun importFontFile(context: android.content.Context, uri: Uri): String? 
     if (!fileName.endsWith(".ttf", ignoreCase = true) && !fileName.endsWith(".otf", ignoreCase = true)) {
         return null
     }
-    val fontsDir = File(context.filesDir, "fonts")
-    if (!fontsDir.exists()) {
-        fontsDir.mkdirs()
-    }
-    val destFile = File(fontsDir, fileName)
-    try {
+    val destFile = File(File(context.filesDir, "fonts").apply { mkdirs() }, fileName)
+    return runCatching {
         context.contentResolver.openInputStream(uri)?.use { input ->
-            destFile.outputStream().use { output ->
-                input.copyTo(output)
-            }
+            destFile.outputStream().use { input.copyTo(it) }
         }
-        return fileName
-    } catch (e: Exception) {
-        e.printStackTrace()
-    }
-    return null
+        fileName
+    }.getOrNull()
 }
