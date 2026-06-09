@@ -22,11 +22,43 @@ object AndroidText {
     private val mono: Typeface = Typeface.MONOSPACE
     private val hand: Typeface = Typeface.create("cursive", Typeface.NORMAL)
 
+    private val customFonts = java.util.concurrent.ConcurrentHashMap<String, Typeface>()
+
+    fun initCustomFonts(context: android.content.Context) {
+        val fontsDir = java.io.File(context.filesDir, "fonts")
+        if (!fontsDir.exists()) return
+        val files = fontsDir.listFiles() ?: return
+        val newCustomFonts = mutableMapOf<String, Typeface>()
+        for (file in files) {
+            if (file.isFile && (file.name.endsWith(".ttf", ignoreCase = true) || file.name.endsWith(".otf", ignoreCase = true))) {
+                try {
+                    val typeface = Typeface.createFromFile(file)
+                    val id = file.nameWithoutExtension
+                    newCustomFonts[id] = typeface
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+        synchronized(customFonts) {
+            customFonts.clear()
+            customFonts.putAll(newCustomFonts)
+            // Re-populate FontFace's customFaces so the UI editor shows them
+            com.xnotes.core.pal.FontFace.clearCustomFaces()
+            for (id in newCustomFonts.keys) {
+                com.xnotes.core.pal.FontFace.fromId(id)
+            }
+        }
+    }
+
+    fun getTypeface(face: FontFace): Typeface = base(face)
+
     private fun base(face: FontFace): Typeface = when (face) {
         FontFace.SANS -> sans
         FontFace.SERIF -> serif
         FontFace.MONO -> mono
         FontFace.HAND -> hand
+        else -> customFonts[face.id] ?: mono
     }
 
     fun textPaint(font: FontSpec, argb: Int = 0xFF000000.toInt()): TextPaint =

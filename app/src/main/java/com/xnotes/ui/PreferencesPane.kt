@@ -49,6 +49,12 @@ import com.xnotes.ui.icons.XnotesIcons
 import com.xnotes.ui.theme.ColorMath
 import com.xnotes.ui.theme.LocalPalette
 import com.xnotes.ui.theme.toComposeColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
+import android.provider.OpenableColumns
+import java.io.File
 
 private val accentPresets = listOf(
     Rgba(0, 230, 118), Rgba(255, 138, 30), Rgba(255, 77, 77), Rgba(255, 210, 30),
@@ -70,6 +76,36 @@ fun PreferencesPane(editor: Editor, sidebarOpen: Boolean, onShowSidebar: () -> U
     fun update(p: Preferences) {
         prefs = p
         editor.applyPreferences(p)
+    }
+
+    val context = LocalContext.current
+    var importedFonts by remember { mutableStateOf(emptyList<String>()) }
+
+    fun reloadImportedFonts() {
+        val fontsDir = File(context.filesDir, "fonts")
+        if (fontsDir.exists()) {
+            importedFonts = fontsDir.listFiles()
+                ?.filter { it.isFile && (it.name.endsWith(".ttf", true) || it.name.endsWith(".otf", true)) }
+                ?.map { it.nameWithoutExtension }
+                ?.sorted() ?: emptyList()
+        } else {
+            importedFonts = emptyList()
+        }
+    }
+
+    remember {
+        reloadImportedFonts()
+        false
+    }
+
+    val fontPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        if (uri != null) {
+            importFontFile(context, uri)
+            com.xnotes.platform.AndroidText.initCustomFonts(context)
+            reloadImportedFonts()
+        }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -160,6 +196,69 @@ fun PreferencesPane(editor: Editor, sidebarOpen: Boolean, onShowSidebar: () -> U
             CheckRow("Page colour follows the theme", prefs.pageColor == null) {
                 update(prefs.copy(pageColor = if (it) null else pageColorPresets.first()))
             }
+
+            HorizontalDivider(color = palette.border.toComposeColor())
+            SectionTitle("Custom Fonts")
+            if (importedFonts.isEmpty()) {
+                Text("No custom fonts imported.", color = palette.textDim.toComposeColor(), fontSize = 13.sp)
+            } else {
+                importedFonts.forEach { fontName ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().height(40.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(fontName, color = palette.text.toComposeColor(), fontSize = 14.sp)
+                        IconButton(onClick = {
+                            val fontsDir = File(context.filesDir, "fonts")
+                            val otfFile = File(fontsDir, "$fontName.otf")
+                            val ttfFile = File(fontsDir, "$fontName.ttf")
+                            if (otfFile.exists()) otfFile.delete()
+                            if (ttfFile.exists()) ttfFile.delete()
+                            com.xnotes.platform.AndroidText.initCustomFonts(context)
+                            reloadImportedFonts()
+                        }) {
+                            Icon(
+                                XnotesIcons.trash,
+                                contentDescription = "Delete font",
+                                tint = palette.textDim.toComposeColor(),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(palette.surface.toComposeColor())
+                    .border(1.dp, palette.border.toComposeColor(), RoundedCornerShape(6.dp))
+                    .clickable {
+                        fontPickerLauncher.launch(
+                            arrayOf(
+                                "font/ttf",
+                                "font/otf",
+                                "application/x-font-ttf",
+                                "application/x-font-otf",
+                                "application/octet-stream"
+                            )
+                        )
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        XnotesIcons.plus,
+                        contentDescription = null,
+                        tint = palette.accent.toComposeColor(),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Import Font (.ttf, .otf)", color = palette.accent.toComposeColor(), fontSize = 13.sp)
+                }
+            }
+
             Spacer(Modifier.size(8.dp))
         }
     }
@@ -325,4 +424,52 @@ private fun SizeDropdown(size: PageSize, onSelect: (PageSize) -> Unit) {
             }
         }
     }
+}
+
+private fun getFileName(context: android.content.Context, uri: Uri): String? {
+    var result: String? = null
+    if (uri.scheme == "content") {
+        val cursor = context.contentResolver.query(uri, null, null, null, null)
+        try {
+            if (cursor != null && cursor.moveToFirst()) {
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index != -1) {
+                    result = cursor.getString(index)
+                }
+            }
+        } finally {
+            cursor?.close()
+        }
+    }
+    if (result == null) {
+        result = uri.path
+        val cut = result?.lastIndexOf('/')
+        if (cut != null && cut != -1) {
+            result = result.substring(cut + 1)
+        }
+    }
+    return result
+}
+
+private fun importFontFile(context: android.content.Context, uri: Uri): String? {
+    val fileName = getFileName(context, uri) ?: return null
+    if (!fileName.endsWith(".ttf", ignoreCase = true) && !fileName.endsWith(".otf", ignoreCase = true)) {
+        return null
+    }
+    val fontsDir = File(context.filesDir, "fonts")
+    if (!fontsDir.exists()) {
+        fontsDir.mkdirs()
+    }
+    val destFile = File(fontsDir, fileName)
+    try {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            destFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        return fileName
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return null
 }

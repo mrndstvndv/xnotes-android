@@ -30,6 +30,7 @@ internal fun FontFace.toComposeFamily(): FontFamily = when (this) {
     FontFace.SERIF -> FontFamily.Serif
     FontFace.MONO -> FontFamily.Monospace
     FontFace.HAND -> FontFamily.Cursive
+    else -> FontFamily(com.xnotes.platform.AndroidText.getTypeface(this))
 }
 
 /**

@@ -33,15 +33,22 @@ import com.xnotes.ui.theme.LocalPalette
 import com.xnotes.ui.theme.toComposeColor
 import kotlin.math.roundToInt
 
-/** The four selectable faces and their labels, in the order the picker lists them. */
-private val FACES = listOf(
-    FontFace.SANS to "Sans",
-    FontFace.SERIF to "Serif",
-    FontFace.MONO to "Mono",
-    FontFace.HAND to "Hand",
-)
+private fun getAvailableFaces(): List<Pair<FontFace, String>> {
+    val list = mutableListOf(
+        FontFace.SANS to "Sans",
+        FontFace.SERIF to "Serif",
+        FontFace.MONO to "Mono",
+        FontFace.HAND to "Hand"
+    )
+    for (entry in FontFace.entries) {
+        if (entry != FontFace.SANS && entry != FontFace.SERIF && entry != FontFace.MONO && entry != FontFace.HAND) {
+            list.add(entry to entry.id)
+        }
+    }
+    return list
+}
 
-private fun faceLabel(face: FontFace): String = FACES.firstOrNull { it.first == face }?.second ?: "Mono"
+private fun faceLabel(face: FontFace): String = getAvailableFaces().firstOrNull { it.first == face }?.second ?: face.id
 
 /**
  * Floating font/size bar for the active text box (the one being edited, or a lone
@@ -116,7 +123,7 @@ private fun FacePicker(current: FontFace, onPick: (FontFace) -> Unit) {
             Text(" ▾", color = palette.textDim.toComposeColor(), fontSize = 11.sp)
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            for ((face, label) in FACES) {
+            for ((face, label) in getAvailableFaces()) {
                 DropdownMenuItem(
                     text = {
                         Text(

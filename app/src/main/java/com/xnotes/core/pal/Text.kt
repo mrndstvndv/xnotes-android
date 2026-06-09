@@ -5,15 +5,42 @@ package com.xnotes.core.pal
  * host resolves each to a concrete platform font. [MONO] is the historical default
  * (and what files without a face stored fall back to), so older notes are unchanged.
  */
-enum class FontFace(val id: String) {
-    SANS("sans"),
-    SERIF("serif"),
-    MONO("mono"),
-    HAND("hand");
-
+class FontFace(val id: String) {
     companion object {
-        fun fromId(id: String?): FontFace = entries.firstOrNull { it.id == id } ?: MONO
+        val SANS = FontFace("sans")
+        val SERIF = FontFace("serif")
+        val MONO = FontFace("mono")
+        val HAND = FontFace("hand")
+
+        private val customFaces = java.util.concurrent.ConcurrentHashMap<String, FontFace>()
+
+        fun fromId(id: String?): FontFace {
+            if (id == null) return MONO
+            return when (id) {
+                "sans" -> SANS
+                "serif" -> SERIF
+                "mono" -> MONO
+                "hand" -> HAND
+                else -> customFaces.getOrPut(id) { FontFace(id) }
+            }
+        }
+
+        fun clearCustomFaces() {
+            customFaces.clear()
+        }
+
+        val entries: List<FontFace>
+            get() = listOf(SANS, SERIF, MONO, HAND) + customFaces.values.sortedBy { it.id }
     }
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is FontFace) return false
+        return id == other.id
+    }
+
+    override fun hashCode(): Int = id.hashCode()
+    override fun toString(): String = id
 }
 
 /**

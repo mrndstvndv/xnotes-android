@@ -91,6 +91,10 @@ class Editor(context: Context) {
     private var settings = settingsRepo.load()
     private var pdfSource: com.xnotes.platform.PdfSource? = null
 
+    init {
+        com.xnotes.platform.AndroidText.initCustomFonts(appContext)
+    }
+
     /** Private cache dir holding each note's source PDF as a file, so a large PDF is never held
      *  whole in RAM (the renderer memory-maps it). Purged on launch to drop temp files orphaned
      *  by a previous crash — safe here because no real note is open yet at construction. */
