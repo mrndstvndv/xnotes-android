@@ -27,6 +27,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -99,7 +108,7 @@ fun TextStyleBar(editor: Editor) {
         )
         SizeStepper(
             size = bar.pointSize,
-            onDelta = { editor.setTextPointSize(bar.pointSize + it) },
+            onSizeChanged = { editor.setTextPointSize(it) },
         )
     }
 }
@@ -149,18 +158,52 @@ private fun FacePicker(
 }
 
 @Composable
-private fun SizeStepper(size: Double, onDelta: (Double) -> Unit) {
+private fun SizeStepper(size: Double, onSizeChanged: (Double) -> Unit) {
     val palette = LocalPalette.current
+    val focusManager = LocalFocusManager.current
+    var textValue by remember(size) { mutableStateOf(size.roundToInt().toString()) }
+
     Row(verticalAlignment = Alignment.CenterVertically) {
-        StepButton("−") { onDelta(-1.0) } // minus
-        Text(
-            size.roundToInt().toString(),
-            color = palette.text.toComposeColor(),
-            fontSize = 15.sp,
-            modifier = Modifier.width(26.dp),
-            style = TextStyle(fontFamily = FontFamily.Monospace),
+        StepButton("−") { onSizeChanged((size - 1.0).coerceAtLeast(1.0)) } // minus
+        BasicTextField(
+            value = textValue,
+            onValueChange = { newValue ->
+                val filtered = newValue.filter { it.isDigit() }
+                if (filtered.length <= 3) {
+                    textValue = filtered
+                    filtered.toDoubleOrNull()?.let {
+                        if (it > 0) {
+                            onSizeChanged(it)
+                        }
+                    }
+                }
+            },
+            modifier = Modifier
+                .width(32.dp)
+                .onFocusChanged { focusState ->
+                    if (!focusState.isFocused && textValue.isEmpty()) {
+                        textValue = size.roundToInt().toString()
+                    }
+                },
+            textStyle = TextStyle(
+                color = palette.text.toComposeColor(),
+                fontSize = 15.sp,
+                fontFamily = FontFamily.Monospace,
+                textAlign = TextAlign.Center
+            ),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Number,
+                imeAction = ImeAction.Done
+            ),
+            keyboardActions = KeyboardActions(
+                onDone = {
+                    focusManager.clearFocus()
+                }
+            ),
+            singleLine = true,
+            cursorBrush = SolidColor(palette.text.toComposeColor())
         )
-        StepButton("+") { onDelta(1.0) }
+        StepButton("+") { onSizeChanged(size + 1.0) }
     }
 }
 
