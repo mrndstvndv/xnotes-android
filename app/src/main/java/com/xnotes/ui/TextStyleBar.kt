@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -26,6 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xnotes.core.pal.FontFace
@@ -86,7 +88,11 @@ fun TextStyleBar(editor: Editor) {
             .border(1.dp, palette.border.toComposeColor(), RoundedCornerShape(10.dp)),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FacePicker(current = bar.face) { editor.setTextFace(it) }
+        FacePicker(
+            current = bar.face,
+            modifier = Modifier.weight(1f),
+            onPick = { editor.setTextFace(it) }
+        )
         Box(
             Modifier.width(1.dp).fillMaxHeight().padding(vertical = 8.dp)
                 .background(palette.border.toComposeColor()),
@@ -99,13 +105,18 @@ fun TextStyleBar(editor: Editor) {
 }
 
 @Composable
-private fun FacePicker(current: FontFace, onPick: (FontFace) -> Unit) {
+private fun FacePicker(
+    current: FontFace,
+    modifier: Modifier = Modifier,
+    onPick: (FontFace) -> Unit
+) {
     val palette = LocalPalette.current
     var open by remember { mutableStateOf(false) }
-    Box {
+    Box(modifier = modifier) {
         Row(
             modifier = Modifier
                 .fillMaxHeight()
+                .fillMaxWidth()
                 .clickable { open = true }
                 .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -114,6 +125,9 @@ private fun FacePicker(current: FontFace, onPick: (FontFace) -> Unit) {
                 faceLabel(current),
                 color = palette.text.toComposeColor(),
                 style = TextStyle(fontFamily = current.toComposeFamily(), fontSize = 15.sp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
             )
             Text(" ▾", color = palette.textDim.toComposeColor(), fontSize = 11.sp)
         }
