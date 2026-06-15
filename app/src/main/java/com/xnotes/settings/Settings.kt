@@ -135,7 +135,10 @@ data class Settings(
             .put("erase_mode", c.eraseMode.id)
             .put("switch_back_after_erase", c.switchBackAfterErase)
             .put("straight_line", c.straightLine)
+            .put("scale", c.scale)
+            .put("highlighter_alpha", c.highlighterAlpha)
             .put("rgba", rgbaArr(c.rgba))
+            .apply { c.colorOverride?.let { put("color_override", rgbaArr(it)) } }
 
         private fun toolConfig(o: JSONObject, tool: Tool): ToolConfig {
             val d = ToolDefaults.configFor(tool)
@@ -154,6 +157,11 @@ data class Settings(
                 eraseMode = EraseMode.fromId(o.optString("erase_mode", d.eraseMode.id)),
                 switchBackAfterErase = o.optBoolean("switch_back_after_erase", d.switchBackAfterErase),
                 straightLine = o.optBoolean("straight_line", d.straightLine),
+                scale = o.optBoolean("scale", d.scale),
+                highlighterAlpha = o.optDouble("highlighter_alpha", d.highlighterAlpha),
+                colorOverride = o.optJSONArray("color_override")
+                    ?.let { a -> Rgba.fromList((0 until a.length()).map { i -> a.optInt(i, 0) }) }
+                    ?: d.colorOverride,
             )
         }
 

@@ -121,6 +121,9 @@ fun Toolbar(
                 }
             }
             if (i == 6 || i == 9) Separator()
+            if (tool == Tool.SHAPE) {
+                ToolbarIcon(XnotesIcons.ruler, "Ruler", active = editor.rulerVisible) { editor.toggleRuler() }
+            }
         }
         Separator()
 
@@ -149,6 +152,7 @@ fun Toolbar(
         Label("${editor.pageIndex + 1} / ${editor.pageCount}")
         ToolbarIcon(XnotesIcons.next, "Next page") { editor.nextPage() }
         PageMenu(editor)
+        StylesButton(editor)
         Separator()
 
         // Zoom
@@ -202,6 +206,16 @@ private fun RenameDialog(initial: String, onConfirm: (String) -> Unit, onDismiss
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
         containerColor = LocalPalette.current.menuBg.toComposeColor(),
     )
+}
+
+/** Opens the page-styles popup (paper colour + ruling) for the document and the current page. */
+@Composable
+private fun StylesButton(editor: Editor) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        ToolbarIcon(XnotesIcons.sliders, "Styles") { open = true }
+        if (open) StylesPopup(editor) { open = false }
+    }
 }
 
 @Composable

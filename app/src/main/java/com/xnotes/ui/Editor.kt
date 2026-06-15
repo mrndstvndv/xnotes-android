@@ -29,10 +29,18 @@ import com.xnotes.core.model.Document
 import com.xnotes.core.model.ImageItem
 import com.xnotes.core.model.Orientation
 import com.xnotes.core.model.Page
+import com.xnotes.core.model.PagePattern
 import com.xnotes.core.model.PageSize
+import com.xnotes.core.model.PageStyle
 import com.xnotes.core.model.Rgba
 import com.xnotes.core.pal.FontFace
+import com.xnotes.core.pal.Renderer
 import com.xnotes.core.model.deepCopy
+import com.xnotes.core.model.paintPagePattern
+import com.xnotes.core.model.resolvedPageColor
+import com.xnotes.core.model.resolvedPattern
+import com.xnotes.core.model.resolvedPatternColor
+import com.xnotes.core.model.resolvedSpacing
 import com.xnotes.core.tools.InkPalette
 import com.xnotes.core.tools.ShapeConfig
 import com.xnotes.core.tools.Tool
@@ -126,8 +134,6 @@ class Editor(context: Context) {
     private val noteThumbs = object : LruCache<String, ImageBitmap>(32 * 1024 * 1024) {
         override fun sizeOf(key: String, value: ImageBitmap) = value.width * value.height * 4
     }
-    /** The source mtime each in-memory tile was rendered from, so an edited note's tile re-renders. */
-    private val tileMtimes = java.util.concurrent.ConcurrentHashMap<String, Long>()
     /** App-tracked creation times for explorer ordering (SAF exposes only last-modified). */
     private val createdStore = com.xnotes.platform.CreationTimeStore(com.xnotes.platform.JsonStore.createdTimes(appContext))
     /** A single lowest-priority background thread renders explorer thumbnails one at a time, so a
@@ -197,6 +203,8 @@ class Editor(context: Context) {
     /** Flipped by the import dialog's Cancel so the in-flight stream-copy aborts at its next buffer. */
     private val importCancelled = java.util.concurrent.atomic.AtomicBoolean(false)
     var zoomLocked by mutableStateOf(false)
+        private set
+    var rulerVisible by mutableStateOf(false)
         private set
     var hasSelection by mutableStateOf(false)
         private set
@@ -388,7 +396,7 @@ class Editor(context: Context) {
                 }
             }
         }
-        installPdfBackground()
+        installPageBackground()
         state.invalidateAllCaches()
         startPdfRefine() // kick the up-front sweep over all pages + drive the "Refining k/N" hint
     }
@@ -402,29 +410,39 @@ class Editor(context: Context) {
         openPdfTemp = keep
     }
 
-    private fun installPdfBackground() {
-        val src = pdfSource
-        state.paintPageBackground = if (src == null) {
-            null
-        } else {
-            { page, renderer, res, region ->
-                val pi = page.pdfPage
-                if (pi != null) {
-                    val fullW = (page.width * res).toInt()
-                    val fullH = (page.height * res).toInt()
-                    val rx = (region.left * res).toInt()
-                    val ry = (region.top * res).toInt()
-                    val rw = kotlin.math.ceil(region.w * res).toInt()
-                    val rh = kotlin.math.ceil(region.h * res).toInt()
-                    val invert = settings.prefs.pdfDarkMode
-                    src.renderRegion(pi, fullW, fullH, rx, ry, rw, rh, invert, keepImages = invert && settings.prefs.pdfKeepImageColors)?.let { bg ->
-                        renderer.drawRaster(
-                            bg,
-                            com.xnotes.core.geometry.Rect(region.left, region.top, region.w, region.h),
-                        )
-                        bg.recycle()
-                    }
+    /**
+     * Installs the page-background painter: the source-PDF raster (when the page links one) plus the
+     * page-style ruling (lines/dots/grid) on top. Always non-null — so plain notes get rulings too —
+     * and reads [pdfSource] live, so a single install survives document swaps; [CanvasState.hasPageBackground]
+     * gates which pages actually allocate a background surface (a plain colour page allocates none).
+     */
+    private fun installPageBackground() {
+        state.paintPageBackground = { page, renderer, res, region ->
+            val src = pdfSource
+            val pi = page.pdfPage
+            if (src != null && pi != null) {
+                val fullW = (page.width * res).toInt()
+                val fullH = (page.height * res).toInt()
+                val rx = (region.left * res).toInt()
+                val ry = (region.top * res).toInt()
+                val rw = kotlin.math.ceil(region.w * res).toInt()
+                val rh = kotlin.math.ceil(region.h * res).toInt()
+                val invert = settings.prefs.pdfDarkMode
+                src.renderRegion(pi, fullW, fullH, rx, ry, rw, rh, invert, keepImages = invert && settings.prefs.pdfKeepImageColors)?.let { bg ->
+                    renderer.drawRaster(
+                        bg,
+                        com.xnotes.core.geometry.Rect(region.left, region.top, region.w, region.h),
+                    )
+                    bg.recycle()
                 }
+            }
+            // Rulings belong to blank note pages only — never over an imported PDF page.
+            val pattern = state.effectivePattern(page)
+            if (pi == null && pattern != PagePattern.NONE) {
+                paintPagePattern(
+                    renderer, pattern, state.effectivePatternColor(page), state.effectiveSpacing(page),
+                    page.width, page.height, region,
+                )
             }
         }
     }
@@ -540,7 +558,12 @@ class Editor(context: Context) {
         // crash. A plain note has null bytes and renders identically.
         val src = state.document.pdfFile?.let { com.xnotes.platform.PdfSource.create(appContext, it) }
         try {
-            com.xnotes.platform.PdfExporter.export(appContext, state.document, src, out, state::paperColor, onProgress, isCancelled)
+            com.xnotes.platform.PdfExporter.export(
+                appContext, state.document, src, out,
+                { exportPaper(state.document, it) },
+                { page, r -> paintExportRuling(state.document, page, r) },
+                onProgress, isCancelled,
+            )
         } finally {
             src?.close()
         }
@@ -584,6 +607,7 @@ class Editor(context: Context) {
         state.palette = palette
         state.pageColorOverride = if (p.defaultTemplate == "color") p.pageColor else null
         controller.fingerDraws = p.fingerDraws
+        controller.detectShapes = p.detectShapes
         controller.penButtonTool = if (p.penButtonTool == "none") null else (Tool.fromId(p.penButtonTool) ?: Tool.ERASER)
         state.sideMargin = p.sideMargin
         state.relayout()
@@ -703,6 +727,68 @@ class Editor(context: Context) {
 
     fun commitText(text: String? = null) {
         controller.commitTextEdit(text)
+    }
+
+    // --- page styles (paper colour + ruling): document-wide ("All Pages") and per-page ---
+
+    /** The document-wide style override; per-page styles layer on top (see [PageStyle]). */
+    val documentStyle: PageStyle get() = state.document.style
+
+    /** The current page's own style override (an empty [PageStyle] when there is no page). */
+    val currentPageStyle: PageStyle
+        get() = state.document.pages.getOrNull(state.currentPageIndex())?.style ?: PageStyle()
+
+    /** Replace the document-wide ("All Pages") style override. */
+    fun setDocumentStyle(style: PageStyle) {
+        val prev = state.document.style
+        if (prev == style) return
+        state.document.style = style
+        applyStyleChange(prev, style, state.document.pages.toList())
+    }
+
+    /** Replace the current page's style override. */
+    fun setCurrentPageStyle(style: PageStyle) {
+        val page = state.document.pages.getOrNull(state.currentPageIndex()) ?: return
+        val prev = page.style
+        if (prev == style) return
+        page.style = style
+        applyStyleChange(prev, style, listOf(page))
+    }
+
+    /**
+     * Apply a style change to the caches and persist it (dirty -> autosave) — deliberately **not**
+     * onto the undo stack. The paper colour is filled live each frame, so a colour-only change just
+     * repaints; a ruling change ([pages] are the pages it may affect) rebuilds their background caches.
+     */
+    private fun applyStyleChange(prev: PageStyle, next: PageStyle, pages: List<Page>) {
+        val rulingChanged = prev.pattern != next.pattern ||
+            prev.patternColor != next.patternColor ||
+            prev.spacing != next.spacing
+        if (rulingChanged) {
+            if (pages.size == 1) state.invalidateBackground(pages[0]) else state.invalidateAllBackgrounds()
+        } else {
+            state.invalidatePaper()
+        }
+        state.document.dirty = true
+        refreshContent()
+        view.requestRender()
+    }
+
+    // --- export-time style resolution: resolved against the document being exported (which may be a
+    //     closed note loaded by URI, or a page subset), not necessarily the open one ---
+
+    private fun exportPaper(doc: Document, page: Page): Rgba =
+        page.resolvedPageColor(doc, state.pageColorOverride) ?: state.palette.paper
+
+    private fun paintExportRuling(doc: Document, page: Page, r: Renderer) {
+        if (page.pdfPage != null) return // rulings are for blank note pages only, not imported PDF pages
+        val pattern = page.resolvedPattern(doc)
+        if (pattern != PagePattern.NONE) {
+            paintPagePattern(
+                r, pattern, page.resolvedPatternColor(doc), page.resolvedSpacing(doc),
+                page.width, page.height, com.xnotes.core.geometry.Rect(0.0, 0.0, page.width, page.height),
+            )
+        }
     }
 
     private fun refreshContent() {
@@ -895,7 +981,8 @@ class Editor(context: Context) {
         val side = sidePx.coerceAtLeast(1)
         val scale = side.toDouble() / page.width
         val surface = com.xnotes.platform.AndroidRasterSurface.create(side, side)
-        surface.fill(state.paperColor(page))
+        // Resolve the paper colour against this note's own document/page style (not the open note's).
+        surface.fill(page.resolvedPageColor(doc, state.pageColorOverride) ?: state.palette.paper)
         val r = surface.renderer()
         r.scale(scale, scale)
         doc.pdfFile?.let { file ->
@@ -924,31 +1011,30 @@ class Editor(context: Context) {
     fun cachedNoteTile(uri: String): ImageBitmap? = synchronized(noteThumbs) { noteThumbs.get(uri) }
 
     /**
-     * The square thumbnail for the note at [uri], for the explorer grid. Returns a fresh memory hit
-     * instantly; otherwise renders off the main thread on the single low-priority [thumbDispatcher]
-     * (one note at a time) so a folder of many notes fills in gradually without stalling the UI.
-     * [modified] is the file's current mtime: a cached tile (memory or disk) rendered from a
-     * different mtime is stale and re-rendered, so editing a note refreshes its tile automatically.
+     * The square thumbnail for the note at [uri], for the explorer grid. Returns a cached hit
+     * (memory, then disk) as-is; otherwise renders off the main thread on the single low-priority
+     * [thumbDispatcher] (one note at a time) so a folder of many notes fills in gradually without
+     * stalling the UI. The cache is authoritative — a cached tile is shown unconditionally; a content
+     * change drops it ([invalidateThumb]) so it re-renders, and closing a note regenerates it.
      */
-    suspend fun noteTileThumbnail(uri: String, modified: Long): ImageBitmap? {
-        synchronized(noteThumbs) { if (tileMtimes[uri] == modified) noteThumbs.get(uri)?.let { return it } }
+    suspend fun noteTileThumbnail(uri: String): ImageBitmap? {
+        synchronized(noteThumbs) { noteThumbs.get(uri)?.let { return it } }
         return withContext(thumbDispatcher) {
             delay(150) // let a quick scroll-past cancel this before any heavy work begins
             if (!isActive) return@withContext null
-            synchronized(noteThumbs) { if (tileMtimes[uri] == modified) noteThumbs.get(uri)?.let { return@withContext it } }
-            val disk = thumbCache.load(uri)
-            val bmp = if (disk != null && disk.second == modified) disk.first else {
+            synchronized(noteThumbs) { noteThumbs.get(uri)?.let { return@withContext it } }
+            val bmp = thumbCache.load(uri) ?: run {
                 val doc = runCatching {
                     appContext.contentResolver.openInputStream(android.net.Uri.parse(uri))?.use { codec.read(it, pdfDir) }
                 }.getOrNull() ?: return@withContext null
                 try {
-                    renderDocThumbnailSquare(doc, tilePx)?.also { thumbCache.store(uri, it, modified) } ?: return@withContext null
+                    renderDocThumbnailSquare(doc, tilePx)?.also { thumbCache.store(uri, it) } ?: return@withContext null
                 } finally {
                     doc.pdfFile?.delete() // transient doc loaded just for a thumbnail — drop its extracted PDF
                 }
             }
             val img = bmp.asImageBitmap()
-            synchronized(noteThumbs) { noteThumbs.put(uri, img); tileMtimes[uri] = modified }
+            synchronized(noteThumbs) { noteThumbs.put(uri, img) }
             img
         }
     }
@@ -956,18 +1042,8 @@ class Editor(context: Context) {
     /** Drop a note's cached tile (memory + disk) so it re-renders with fresh content next time it's shown. */
     private fun invalidateThumb(uri: String) {
         synchronized(noteThumbs) { noteThumbs.remove(uri) }
-        tileMtimes.remove(uri)
         thumbCache.remove(uri)
     }
-
-    /** The last-modified time SAF reports for a document URI, or 0 when unknown. */
-    private fun queryModified(uri: String): Long = runCatching {
-        appContext.contentResolver.query(
-            android.net.Uri.parse(uri),
-            arrayOf(android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED),
-            null, null, null,
-        )?.use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L } ?: 0L
-    }.getOrDefault(0L)
 
     /**
      * Render the just-closed note's tile from the in-memory document and cache it (memory + disk), so
@@ -980,10 +1056,9 @@ class Editor(context: Context) {
         withContext(thumbDispatcher) {
             if (state.document !== doc) return@withContext // a new note was opened; don't cache stale pixels
             val bmp = runCatching { renderDocThumbnailSquare(doc, tilePx) }.getOrNull() ?: return@withContext
-            val modified = queryModified(uri) // the mtime flushAutosave just wrote
-            thumbCache.store(uri, bmp, modified)
+            thumbCache.store(uri, bmp)
             val img = bmp.asImageBitmap()
-            synchronized(noteThumbs) { noteThumbs.put(uri, img); tileMtimes[uri] = modified }
+            synchronized(noteThumbs) { noteThumbs.put(uri, img) }
         }
     }
 
@@ -1026,7 +1101,6 @@ class Editor(context: Context) {
         viewStates.clear() // forget every remembered per-note view for the released folder
         createdStore.clear() // and every tracked creation time — the keys only meant anything for that folder
         synchronized(noteThumbs) { noteThumbs.evictAll() }
-        tileMtimes.clear()
         thumbCache.prune(emptySet()) // every cached tile belonged to the released folder
     }
 
@@ -1412,7 +1486,10 @@ class Editor(context: Context) {
                     appContext.contentResolver.openOutputStream(android.net.Uri.parse(uri), "wt")?.use { codec.write(state.document, it) } != null
                 }.getOrDefault(false)
             }
-            if (ok) { state.document.dirty = false; dirty = false }
+            if (ok) {
+                state.document.dirty = false; dirty = false
+                invalidateThumb(uri) // file changed on disk; drop the stale tile so the grid re-renders it
+            }
         }
     }
 
@@ -1571,7 +1648,12 @@ class Editor(context: Context) {
         val doc = appContext.contentResolver.openInputStream(android.net.Uri.parse(srcUri))?.use { codec.read(it, pdfDir) } ?: return
         val src = doc.pdfFile?.let { com.xnotes.platform.PdfSource.create(appContext, it) }
         try {
-            com.xnotes.platform.PdfExporter.export(appContext, doc, src, out, { page -> state.paperColor(page) }, onProgress, isCancelled)
+            com.xnotes.platform.PdfExporter.export(
+                appContext, doc, src, out,
+                { exportPaper(doc, it) },
+                { page, r -> paintExportRuling(doc, page, r) },
+                onProgress, isCancelled,
+            )
         } finally {
             src?.close()
             doc.pdfFile?.delete() // transient doc loaded just for export — drop its extracted PDF
@@ -1613,10 +1695,16 @@ class Editor(context: Context) {
         refreshTextBar()
     }
 
+    /** Live swatch recolour while the picker is open: applies to the canvas but does *not* yet
+     *  commit to recents (a spectrum drag fires this on every sample and would flood the list). */
     fun setSwatchColor(index: Int, color: Rgba) {
         toolbarColors = toolbarColors.toMutableList().also { it[index] = color }
-        settings = settings.rememberColor(color)
         pickColor(index)
+    }
+
+    /** Commit the swatch's current colour to the recent-colours list — called once the picker closes. */
+    fun rememberSwatchColor(index: Int) {
+        toolbarColors.getOrNull(index)?.let { settings = settings.rememberColor(it) }
     }
 
     fun setShapeKind(kind: com.xnotes.core.tools.ShapeKind) {
@@ -1684,6 +1772,11 @@ class Editor(context: Context) {
     fun toggleZoomLock() {
         zoomLocked = !zoomLocked
         state.zoomLocked = zoomLocked
+    }
+
+    fun toggleRuler() {
+        controller.toggleRuler()
+        rulerVisible = controller.rulerVisible()
     }
 
     /** Show (or re-arm) the transient "lock zoom" hint after a pinch snaps to fit-to-width. */
@@ -1871,12 +1964,18 @@ class Editor(context: Context) {
         if (pages.isEmpty()) return
         val sub = Document(dpi = state.document.dpi, pdfFile = state.document.pdfFile)
         sub.pages.addAll(pages) // share the page objects; export only reads them
+        sub.style = state.document.style // carry the note's "all pages" style into the subset export
         // A private source per export — see [exportPdf]: the canvas's cache thread may be
         // touching the live [pdfSource], and PdfRenderer can't be shared across threads. The
         // shared PDF file is read-only and owned by the open document, so closing src won't delete it.
         val src = sub.pdfFile?.let { com.xnotes.platform.PdfSource.create(appContext, it) }
         try {
-            com.xnotes.platform.PdfExporter.export(appContext, sub, src, out, state::paperColor, onProgress, isCancelled)
+            com.xnotes.platform.PdfExporter.export(
+                appContext, sub, src, out,
+                { exportPaper(sub, it) },
+                { page, r -> paintExportRuling(sub, page, r) },
+                onProgress, isCancelled,
+            )
         } finally {
             src?.close()
         }

@@ -23,8 +23,8 @@ android {
         applicationId = "com.xnotes"
         minSdk = 26
         targetSdk = 36
-        versionCode = 17
-        versionName = "0.6.6"
+        versionCode = 20
+        versionName = "0.7.2"
     }
 
     // F-Droid rejects the AGP dependency-metadata block in the APK signing block.
@@ -47,7 +47,11 @@ android {
     buildTypes {
         release {
             if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
-            isMinifyEnabled = false
+            // R8 shrinks/optimises release builds (see proguard-rules.pro for the few keeps). R8 is
+            // deterministic and the toolchain is pinned (AGP in libs.versions.toml), so F-Droid's
+            // from-source build reproduces this APK's dex byte-for-byte.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

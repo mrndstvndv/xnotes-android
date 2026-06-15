@@ -6,7 +6,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -29,6 +32,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.xnotes.core.model.PagePattern
+import com.xnotes.core.model.PageStyle
 import com.xnotes.core.model.Rgba
 import com.xnotes.core.tools.EraseMode
 import com.xnotes.core.tools.ShapeConfig
@@ -36,15 +41,16 @@ import com.xnotes.core.tools.ShapeKind
 import com.xnotes.core.tools.Tool
 import com.xnotes.core.tools.ToolConversions
 import com.xnotes.ui.icons.XnotesIcons
-import com.xnotes.ui.theme.ColorMath
 import com.xnotes.ui.theme.LocalPalette
 import com.xnotes.ui.theme.toComposeColor
+import kotlin.math.roundToInt
 
 /**
  * Stroke-tool configuration popup (spec 10 §3): PRESSURE / SENSITIVITY, then the
  * tool's signature control — MULTIPLIER (calligraphy), SPEED (speed pen) or TAPER
  * (taper pen) — then WIDTH, and a NEON toggle (with INTENSITY) on any stroke tool but the highlighter.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ToolConfigPopup(editor: Editor, tool: Tool, onDismiss: () -> Unit) {
     val base = remember { editor.toolConfig(tool) }
@@ -59,12 +65,16 @@ fun ToolConfigPopup(editor: Editor, tool: Tool, onDismiss: () -> Unit) {
     var dashLen by remember { mutableStateOf(base.dashLength.toFloat()) }
     var gapLen by remember { mutableStateOf(base.dashGap.toFloat()) }
     var straight by remember { mutableStateOf(base.straightLine) }
+    var scale by remember { mutableStateOf(base.scale) }
+    var intensity by remember { mutableStateOf(ToolConversions.highlighterAlphaToIntensity(base.highlighterAlpha).toFloat()) }
+    var colorOverride by remember { mutableStateOf(base.colorOverride) }
 
     fun emit() {
         val m = ToolConversions.sensitivityToMinFactor(sensitivity.toDouble())
         val ds = if (tool == Tool.CALLIGRAPHY) ToolConversions.multiplierToDirectionStrength(multiplier.toDouble()) else 0.0
         val sp = if (tool == Tool.SPEED) ToolConversions.speedToStrength(speed.toDouble()) else 0.0
         val tp = if (tool == Tool.TAPER) taper.toDouble() else 0.0
+        val ha = if (tool == Tool.HIGHLIGHTER) ToolConversions.intensityToHighlighterAlpha(intensity.toDouble()) else base.highlighterAlpha
         editor.updateToolConfig(
             tool,
             base.copy(
@@ -79,6 +89,9 @@ fun ToolConfigPopup(editor: Editor, tool: Tool, onDismiss: () -> Unit) {
                 dashLength = dashLen.toDouble(),
                 dashGap = gapLen.toDouble(),
                 straightLine = straight,
+                scale = scale,
+                highlighterAlpha = ha,
+                colorOverride = colorOverride,
             ),
         )
     }
@@ -86,6 +99,26 @@ fun ToolConfigPopup(editor: Editor, tool: Tool, onDismiss: () -> Unit) {
     DropdownMenu(expanded = true, onDismissRequest = onDismiss) {
         Column(Modifier.width(250.dp).padding(horizontal = 14.dp, vertical = 8.dp)) {
             PopupTitle(tool.name)
+            // COLOUR override: "Default" follows the toolbar's active ink colour; pick a hue to pin
+            // this tool to it regardless of the toolbar selection.
+            StyleCaption("COLOUR")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                ModeChip("Default", colorOverride == null) { colorOverride = null; emit() }
+                ColorPickerDot(
+                    colorOverride,
+                    custom = colorOverride != null,
+                    onPick = { colorOverride = it; emit() },
+                    dismissOnPick = false,
+                ) { d, p ->
+                    ColorPickerPopup(
+                        initial = colorOverride ?: editor.toolbarColors.getOrNull(editor.activeColorIndex),
+                        recents = editor.recentColors,
+                        onDismiss = d,
+                        onPick = p,
+                    )
+                }
+            }
+            Spacer(Modifier.size(12.dp))
             val hasPressure = tool == Tool.PEN || tool == Tool.CALLIGRAPHY || tool == Tool.SPEED || tool == Tool.TAPER
             if (hasPressure) {
                 ToggleRow("PRESSURE", pressure) { pressure = it; emit() }
@@ -102,12 +135,16 @@ fun ToolConfigPopup(editor: Editor, tool: Tool, onDismiss: () -> Unit) {
             }
             val range = ToolConversions.widthRange(tool)
             SliderRow("WIDTH", width, range.start.toFloat()..range.endInclusive.toFloat()) { width = it; emit() }
+            // SCALE off: ink keeps a constant on-screen thickness whatever zoom you draw at.
+            ToggleRow("SCALE", scale) { scale = it; emit() }
             if (tool == Tool.DASHED) {
                 SliderRow("DASH", dashLen, 2f..40f) { dashLen = it; emit() }
                 SliderRow("GAP", gapLen, 2f..40f) { gapLen = it; emit() }
             }
-            // The highlighter can lock each drag to a single straight segment (for ruling/underlining).
+            // The highlighter's strength (translucency) and an optional straight-segment lock
+            // (for ruling/underlining).
             if (tool == Tool.HIGHLIGHTER) {
+                SliderRow("INTENSITY", intensity, 10f..90f) { intensity = it; emit() }
                 ToggleRow("STRAIGHT LINE", straight) { straight = it; emit() }
             }
             // Glow is offered on every stroke tool except the highlighter (translucent) and the
@@ -122,6 +159,119 @@ fun ToolConfigPopup(editor: Editor, tool: Tool, onDismiss: () -> Unit) {
     }
 }
 
+/**
+ * Page-styles popup (spec 10): two tabs — "All Pages" (the document-wide override) and "Current
+ * Page" — each editing the same controls: paper colour, a ruling (None/Lines/Dots/Grid), its spacing
+ * and colour. Every control is tri-state: "Default" leaves the field unset so it inherits the level
+ * below (page → document → the global page-colour preference / a built-in default); the global
+ * default itself is unchanged here (it lives in Preferences). Like [ToolConfigPopup], the popup holds
+ * the edited style locally and pushes each change to the [Editor] (which persists, but never undoes).
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun StylesPopup(editor: Editor, onDismiss: () -> Unit) {
+    var tab by remember { mutableStateOf(0) } // 0 = All Pages, 1 = Current Page
+    var docStyle by remember { mutableStateOf(editor.documentStyle) }
+    var pageStyle by remember { mutableStateOf(editor.currentPageStyle) }
+    val style = if (tab == 0) docStyle else pageStyle
+    fun apply(next: PageStyle) {
+        if (tab == 0) { docStyle = next; editor.setDocumentStyle(next) }
+        else { pageStyle = next; editor.setCurrentPageStyle(next) }
+    }
+
+    DropdownMenu(expanded = true, onDismissRequest = onDismiss) {
+        Column(Modifier.width(286.dp).padding(horizontal = 14.dp, vertical = 8.dp)) {
+            PopupTitle("STYLES")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                ModeChip("All Pages", tab == 0) { tab = 0 }
+                ModeChip("Current Page", tab == 1) { tab = 1 }
+            }
+
+            Spacer(Modifier.size(12.dp))
+            StyleCaption("PAGE COLOUR")
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                ModeChip("Default", style.pageColor == null) { apply(style.copy(pageColor = null)) }
+                pageColorPresets.forEach { c ->
+                    ColorDot(c.toComposeColor(), style.pageColor == c) { apply(style.copy(pageColor = c)) }
+                }
+                ColorPickerDot(
+                    style.pageColor,
+                    custom = style.pageColor != null && style.pageColor !in pageColorPresets,
+                    onPick = { apply(style.copy(pageColor = it)) },
+                    dismissOnPick = false,
+                ) { d, p -> PageColorGridPopup(style.pageColor, d, p) }
+            }
+
+            Spacer(Modifier.size(12.dp))
+            StyleCaption("PATTERN")
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                ModeChip("Default", style.pattern == null) { apply(style.copy(pattern = null)) }
+                ModeChip("None", style.pattern == PagePattern.NONE) { apply(style.copy(pattern = PagePattern.NONE)) }
+                ModeChip("Lines", style.pattern == PagePattern.LINES) { apply(style.copy(pattern = PagePattern.LINES)) }
+                ModeChip("Dots", style.pattern == PagePattern.DOTS) { apply(style.copy(pattern = PagePattern.DOTS)) }
+                ModeChip("Grid", style.pattern == PagePattern.GRID) { apply(style.copy(pattern = PagePattern.GRID)) }
+            }
+
+            Spacer(Modifier.size(12.dp))
+            val spacing = style.spacing ?: PageStyle.DEFAULT_SPACING
+            StyleCaption("SPACING  ${spacing.toInt()} px" + if (style.spacing == null) "  (default)" else "")
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ModeChip("Default", style.spacing == null) { apply(style.copy(spacing = null)) }
+                Slider(
+                    value = spacing.toFloat().coerceIn(PageStyle.MIN_SPACING.toFloat(), PageStyle.MAX_SPACING.toFloat()),
+                    onValueChange = { apply(style.copy(spacing = it.toDouble())) },
+                    valueRange = PageStyle.MIN_SPACING.toFloat()..PageStyle.MAX_SPACING.toFloat(),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+
+            Spacer(Modifier.size(12.dp))
+            // Effective pattern colour: the page's own, else (on the Current Page tab) the document's,
+            // else the built-in grey. Its alpha is the opacity the slider below edits.
+            val effPatternColor = style.patternColor
+                ?: (if (tab == 1) docStyle.patternColor else null)
+                ?: PageStyle.DEFAULT_PATTERN_COLOR
+            StyleCaption("PATTERN COLOUR")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                ModeChip("Default", style.patternColor == null) { apply(style.copy(patternColor = null)) }
+                ColorPickerDot(
+                    style.patternColor?.copy(a = 255), // show the hue at full strength; OPACITY sets the alpha
+                    custom = style.patternColor != null,
+                    onPick = { apply(style.copy(patternColor = it.copy(a = effPatternColor.a))) }, // keep current opacity
+                    dismissOnPick = false,
+                ) { d, p -> PageColorGridPopup(style.patternColor?.copy(a = 255), d, p) }
+            }
+
+            Spacer(Modifier.size(12.dp))
+            val opacityPct = effPatternColor.a * 100f / 255f
+            StyleCaption("OPACITY  ${opacityPct.roundToInt()}%")
+            Slider(
+                value = opacityPct,
+                onValueChange = { pct ->
+                    apply(style.copy(patternColor = effPatternColor.copy(a = (pct / 100f * 255f).roundToInt().coerceIn(0, 255))))
+                },
+                valueRange = 0f..100f,
+            )
+        }
+    }
+}
+
+@Composable
+private fun StyleCaption(text: String) {
+    Text(
+        text,
+        color = LocalPalette.current.textDim.toComposeColor(),
+        fontFamily = FontFamily.Monospace,
+        fontSize = 11.sp,
+    )
+}
+
 /** Eraser configuration popup: a STROKE/AREA mode picker and a SIZE slider (the eraser radius). */
 @Composable
 fun EraserConfigPopup(editor: Editor, onDismiss: () -> Unit) {
@@ -129,6 +279,7 @@ fun EraserConfigPopup(editor: Editor, onDismiss: () -> Unit) {
     var area by remember { mutableStateOf(base.eraseMode == EraseMode.AREA) }
     var size by remember { mutableStateOf(base.baseWidth.toFloat()) }
     var switchBack by remember { mutableStateOf(base.switchBackAfterErase) }
+    var scale by remember { mutableStateOf(base.scale) }
 
     fun emit() = editor.updateToolConfig(
         Tool.ERASER,
@@ -136,6 +287,7 @@ fun EraserConfigPopup(editor: Editor, onDismiss: () -> Unit) {
             baseWidth = size.toDouble(),
             eraseMode = if (area) EraseMode.AREA else EraseMode.STROKE,
             switchBackAfterErase = switchBack,
+            scale = scale,
         ),
     )
 
@@ -148,6 +300,8 @@ fun EraserConfigPopup(editor: Editor, onDismiss: () -> Unit) {
             }
             val r = ToolConversions.widthRange(Tool.ERASER)
             SliderRow("SIZE", size, r.start.toFloat()..r.endInclusive.toFloat()) { size = it; emit() }
+            // SCALE off: the eraser holds a constant on-screen size whatever zoom you are at.
+            ToggleRow("SCALE", scale) { scale = it; emit() }
             // Re-arm the previous pen/highlighter once an erase lifts, so a quick fix doesn't strand
             // you in the eraser.
             ToggleRow("SWITCH BACK", switchBack) { switchBack = it; emit() }
@@ -186,52 +340,16 @@ fun ShapeConfigPopup(editor: Editor, onDismiss: () -> Unit) {
     }
 }
 
-/** Colour switcher (spec 10 §4): a hue×shade matrix, a greyscale row and recent colours. */
+/** Colour switcher (spec 10 §4): the toolbar swatch picker — opens the shared [ColorPickerPopup]
+ *  and writes the chosen colour back to swatch [index]. Picks apply live; the final colour is
+ *  remembered into recents when the popup closes. */
 @Composable
 fun ColorSwitcherPopup(editor: Editor, index: Int, onDismiss: () -> Unit) {
-    val hues = (0 until 11).map { it * 360.0 / 11.0 }
-    val shades = listOf(0.4 to 1.0, 0.7 to 1.0, 1.0 to 1.0, 1.0 to 0.8, 1.0 to 0.6, 1.0 to 0.42)
-
-    fun pick(c: Rgba) {
-        editor.setSwatchColor(index, c)
-        onDismiss()
-    }
-
-    DropdownMenu(expanded = true, onDismissRequest = onDismiss) {
-        Column(Modifier.padding(10.dp)) {
-            val recents = editor.recentColors
-            if (recents.isNotEmpty()) {
-                PopupTitle("RECENT")
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    recents.take(8).forEach { Cell(it) { pick(it) } }
-                }
-            }
-            PopupTitle("COLOUR")
-            shades.forEach { (s, v) ->
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    hues.forEach { h -> val c = ColorMath.hsvToRgb(h, s, v); Cell(c) { pick(c) } }
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                (0..10).forEach { i ->
-                    val g = (i * 255 / 10)
-                    val c = Rgba(g, g, g)
-                    Cell(c) { pick(c) }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun Cell(color: Rgba, onClick: () -> Unit) {
-    Box(
-        Modifier
-            .size(20.dp)
-            .clip(RoundedCornerShape(2.dp))
-            .background(color.toComposeColor())
-            .border(0.5.dp, LocalPalette.current.border.toComposeColor(), RoundedCornerShape(2.dp))
-            .clickable(onClick = onClick),
+    ColorPickerPopup(
+        initial = editor.toolbarColors.getOrNull(index),
+        recents = editor.recentColors,
+        onDismiss = { editor.rememberSwatchColor(index); onDismiss() },
+        onPick = { editor.setSwatchColor(index, it) },
     )
 }
 
